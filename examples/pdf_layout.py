@@ -324,7 +324,27 @@ def column_gutter(text, bounds):
     return max(candidates)[-1] if candidates else None
 
 
-def order_regions(blocks, cut, width):
+def author_band(title, blocks, cut):
+    """Find parallel author details immediately below a first-page title."""
+    candidates = [
+        block for block in blocks
+        if not (block.images or block.table or block.heading_level)
+        and 0 <= block.box.y0 - title.box.y1 <= 30
+        and 2 <= len(block.text.splitlines()) <= 6
+        and len(block.text) <= 300
+        and (block.box.x1 <= cut or block.box.x0 >= cut)
+    ]
+    if len(candidates) != 2:
+        return []
+    left, right = sorted(candidates, key=lambda block: block.box.x0)
+    if not (left.box.x1 <= cut <= right.box.x0 and abs(left.box.y0 - right.box.y0) <= 4):
+        return []
+    if not any(re.search(r"\b[^\s@]+@[^\s@]+\.[^\s@]+", block.text) for block in candidates):
+        return []
+    return [left, right]
+
+
+def order_regions(blocks, cut, width, first_page=False):
     if cut is None:
         return [sorted(blocks, key=lambda b: (b.box.y0, b.box.x0))]
     spanning = sorted(
@@ -333,6 +353,9 @@ def order_regions(blocks, cut, width):
         key=lambda b: b.box.y0,
     )
     remaining = [b for b in blocks if b not in spanning]
+    title = next((b for b in spanning if b.heading_level == 2), None) if first_page else None
+    authors = author_band(title, remaining, cut) if title is not None else []
+    remaining = [b for b in remaining if b not in authors]
     regions = []
     for boundary in [*spanning, None]:
         band = [b for b in remaining if boundary is None or b.box.y0 < boundary.box.y0]
@@ -343,6 +366,8 @@ def order_regions(blocks, cut, width):
         remaining = [b for b in remaining if b not in band]
         if boundary is not None:
             regions.append([boundary])
+            if boundary is title and authors:
+                regions.append(authors)
     return regions
 
 
@@ -409,7 +434,7 @@ def extract_pdf_layout(input_path: Path, work_dir: Path):
             cut = column_gutter(text, bounds)
             page_parts = []
             previous = None
-            for region in order_regions(text + images, cut, bounds.width):
+            for region in order_regions(text + images, cut, bounds.width, first_page=number == 1):
                 for index, block in enumerate(group_figures(region)):
                     if not block.images:
                         value = join_words(block.text)
