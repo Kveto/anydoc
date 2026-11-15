@@ -33,6 +33,8 @@ pub enum Block {
     },
     /// A horizontal rule.
     Rule,
+    /// Start of a PowerPoint slide, with its one-based presentation index.
+    SlideStart(u32),
     /// A displayed formula, as LaTeX math without delimiters.
     Math(String),
 }

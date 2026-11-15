@@ -61,6 +61,9 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     let footnotes_part =
         typed_part_path(&doc_rels, &main_part, rel_type::FOOTNOTES, "footnotes.xml");
     let endnotes_part = typed_part_path(&doc_rels, &main_part, rel_type::ENDNOTES, "endnotes.xml");
+    // Read `word/comments.xml` as structured notes (credit: @rahul05ranjan,
+    // `firecrawl/anydoc` Issue #191 / PR #210).
+    let comments_part = typed_part_path(&doc_rels, &main_part, rel_type::COMMENTS, "comments.xml");
 
     let ctx = Ctx {
         pkg: &pkg,
@@ -77,6 +80,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
     for (part, root_name, elem_name, prefix, kind) in [
         (footnotes_part, "footnotes", "footnote", "fn", NoteKind::Footnote),
         (endnotes_part, "endnotes", "endnote", "en", NoteKind::Endnote),
+        (comments_part, "comments", "comment", "cm", NoteKind::Footnote),
     ] {
         let Some(tree) = pkg.borrow_mut().optional_xml_part(&part)? else {
             continue;

@@ -1,0 +1,17 @@
+{
+  "objects": [
+    {
+      "asset_key": "assets/6cc2f8cc77a9a534b070a0d79df66d3c91aa5036f4e75a5e94e385b224aaa9f4/original.png",
+      "media_type": "image/png",
+      "processing": [
+        "describe"
+      ],
+      "status": "pending",
+      "id": "anydoc-object-1",
+      "kind": "image"
+    }
+  ],
+  "source_revision": "v1",
+  "source_key": "source/original.rtf",
+  "schema_version": 1
+}

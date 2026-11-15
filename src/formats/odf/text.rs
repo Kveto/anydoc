@@ -197,6 +197,15 @@ fn parse_list(
         let number = current.start.saturating_add(current.items.len() as u64);
         let mut chain = ancestors.to_vec();
         chain.push(number);
+        if !header {
+            // Advancing a parent list item resets deeper sublist continuation
+            // counters for the same list style (credit: @Aschenbath,
+            // `firecrawl/anydoc` Issue #203 / PR #215).
+            let style_key = style_name.unwrap_or("");
+            ctx.list_counters
+                .borrow_mut()
+                .retain(|(s, d), _| !(s == style_key && *d > depth));
+        }
         let mut item_blocks = Vec::new();
         let mut item_run = StyledRun::default();
         for child in item.child_elems() {
@@ -399,6 +408,14 @@ fn walk_inlines(
                         "annotation" | "tracked-changes" | "soft-page-break" => continue,
                         _ => {}
                     }
+                }
+                // Skip `<office:annotation>` so comment metadata does not leak
+                // into paragraph words (credit: @Aschenbath, `firecrawl/anydoc`
+                // Issue #203 / PR #206).
+                if child.is(ns::OFFICE, "annotation")
+                    || child.is(ns::OFFICE, "annotation-end")
+                {
+                    continue;
                 }
                 if child.is(ns::DRAW, "frame") {
                     walk_frame(child, ctx, out, boxes)?;

@@ -123,7 +123,36 @@ fn render_inlines_mode(inlines: &[Inline], ctx: InlineContext, in_label: bool, r
                 }
             }
             Norm::Link { content, target } => render_link(content, target, ctx, rc, &mut out),
-            Norm::Image { alt, source } => render_image(alt, source, ctx, in_label, &mut out),
+            Norm::Image { alt, source } => {
+                let start = out.len();
+                render_image(alt, source, ctx, in_label, rc.objects.is_some(), &mut out);
+                if let Some(objects) = &rc.objects {
+                    let mut objects = objects.borrow_mut();
+                    objects.push(crate::PendingObject::Image {
+                        alt: (*alt).to_owned(),
+                        source: (*source).clone(),
+                    });
+                    let kind = match source {
+                        ImageSource::Asset(id)
+                            if rc
+                                .assets
+                                .get(id.0)
+                                .is_some_and(|a| !a.media_type.starts_with("image/")) =>
+                        {
+                            "object"
+                        }
+                        _ => "image",
+                    };
+                    let sep = if out.len() > start
+                        || (!out.is_empty() && !out.ends_with(char::is_whitespace))
+                    {
+                        " "
+                    } else {
+                        ""
+                    };
+                    let _ = write!(out, "{sep}`anydoc-object-{}` ({kind})", objects.len());
+                }
+            }
             Norm::Anchor(id) => {
                 if let Some(html_id) = rc.anchors.html_id(id) {
                     let _ = write!(out, "<a id=\"{html_id}\"></a>");
@@ -154,7 +183,6 @@ fn render_link(
     rc: &Ctx,
     out: &mut String,
 ) {
-    let label = render_inlines_mode(content, ctx, true, rc);
     let url = match target {
         LinkTarget::External(url) | LinkTarget::Relative(url) => url.clone(),
         LinkTarget::Anchor(id) => match rc.anchors.fragment(id) {
@@ -167,6 +195,7 @@ fn render_link(
             }
         },
     };
+    let label = render_inlines_mode(content, ctx, true, rc);
     // Emptiness is tested on the trimmed label, but the rendered label keeps
     // its source-significant edge spaces.
     if label.trim().is_empty() {
@@ -184,12 +213,20 @@ fn render_image(
     source: &ImageSource,
     ctx: InlineContext,
     in_label: bool,
+    mark_objects: bool,
     out: &mut String,
 ) {
+    let mut trailing_delims = Delims::default();
+    if mark_objects {
+        trailing_delims.insert('`');
+    }
     match source {
         ImageSource::External(url) => {
-            let alt =
-                escape_text(alt.trim(), ctx, EscapeOpts { in_label: true, ..Default::default() });
+            let alt = escape_text(
+                alt.trim(),
+                ctx,
+                EscapeOpts { in_label: true, trailing_delims, ..Default::default() },
+            );
             let _ = write!(out, "![{}]({})", alt, format_url(url));
         }
         // Embedded assets render as their alt text: Markdown cannot embed
@@ -200,7 +237,7 @@ fn render_image(
                 out.push_str(&escape_text(
                     alt.trim(),
                     ctx,
-                    EscapeOpts { in_label, ..Default::default() },
+                    EscapeOpts { in_label, trailing_delims, ..Default::default() },
                 ));
             }
         }
@@ -260,17 +297,22 @@ fn delims_of(run: &Norm, rc: &Ctx) -> Delims {
             // can: a backtick in the label or destination pairs with
             // one outside.
             _ => {
-                if emits_backtick(content) || target_has_backtick(target) {
+                if emits_backtick(content, rc.objects.is_some()) || target_has_backtick(target) {
                     delims.insert('`');
                 }
             }
         },
-        Norm::Image { alt, source } => match source {
-            ImageSource::External(_) if alt.contains('`') => delims.insert('`'),
-            ImageSource::External(_) => {}
-            // Sourceless images degrade to their alt as plain text.
-            ImageSource::Asset(_) | ImageSource::Unavailable => delims.insert_closers(alt),
-        },
+        Norm::Image { alt, source } => {
+            if rc.objects.is_some() {
+                delims.insert('`');
+            }
+            match source {
+                ImageSource::External(_) if alt.contains('`') => delims.insert('`'),
+                ImageSource::External(_) => {}
+                // Sourceless images degrade to their alt as plain text.
+                ImageSource::Asset(_) | ImageSource::Unavailable => delims.insert_closers(alt),
+            }
+        }
         Norm::NoteRef(_)
         | Norm::Anchor(_)
         | Norm::LineBreak
@@ -299,13 +341,15 @@ fn target_has_backtick(target: &LinkTarget) -> bool {
 /// earlier raw one can pair with: any backtick in text counts even where the
 /// label escapes it (code spans ignore backslash escapes), and a code run
 /// emits fences unless it is whitespace-only and loses its styling.
-fn emits_backtick(inlines: &[Inline]) -> bool {
+fn emits_backtick(inlines: &[Inline], mark_objects: bool) -> bool {
     inlines.iter().any(|inline| match inline {
         Inline::Text { text, style } => {
             text.contains('`') || (style.code && !text.trim().is_empty())
         }
-        Inline::Link { content, target } => emits_backtick(content) || target_has_backtick(target),
-        Inline::Image { alt, .. } => alt.contains('`'),
+        Inline::Link { content, target } => {
+            emits_backtick(content, mark_objects) || target_has_backtick(target)
+        }
+        Inline::Image { alt, .. } => mark_objects || alt.contains('`'),
         _ => false,
     })
 }

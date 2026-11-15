@@ -164,6 +164,7 @@ pub fn parse(bytes: &[u8]) -> Result<Document, ConvertError> {
             instance_counter: &instance_counter,
             slide_anchors: &slide_anchors,
         };
+        blocks.push(Block::SlideStart((slide_index + 1) as u32));
         if targeted.contains(slide_path)
             && let Some(anchor) = slide_anchors.get(slide_path)
         {

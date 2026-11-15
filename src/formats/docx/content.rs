@@ -435,6 +435,11 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                         self.push(Inline::Anchor(name.to_string()));
                     }
                 }
+                "commentReference" => {
+                    if let Some(id) = child.attr(ns::W, "id") {
+                        self.push(Inline::NoteRef(format!("cm{id}")));
+                    }
+                }
                 "sdt" => {
                     if let Some(content) = child.find(ns::W, "sdtContent") {
                         self.walk(content)?;
@@ -516,6 +521,16 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 "endnoteReference" => {
                     if let Some(id) = child.attr(ns::W, "id") {
                         self.push(Inline::NoteRef(format!("en{id}")));
+                    }
+                }
+                "commentReference" => {
+                    if let Some(id) = child.attr(ns::W, "id") {
+                        self.push(Inline::NoteRef(format!("cm{id}")));
+                    }
+                }
+                "sym" => {
+                    if let Some(ch) = decode_w_sym(child) {
+                        self.push(Inline::Text { text: ch.to_string(), style });
                     }
                 }
                 "drawing" | "pict" | "object" => self.walk_drawing(child)?,
@@ -601,7 +616,27 @@ impl<'a, 'b, 'e> InlineWalker<'a, 'b, 'e> {
                 },
                 None => None,
             };
-            self.push(Inline::Image { alt, source: source.unwrap_or(ImageSource::Unavailable) });
+            // Retain the companion VML preview image (`v:imagedata`) in the
+            // asset store when present, and fall back to it if the OLE binary
+            // stream itself is missing or external (`firecrawl/anydoc` Issue
+            // #219 / PR #222).
+            let preview_source = match elem
+                .first_descendant(ns::VML, "imagedata")
+                .and_then(|i| i.attr_qualified(ns::R, "id"))
+            {
+                Some(rel_id) => crate::shared::assets::rel_image_source(
+                    self.ctx.pkg,
+                    &self.ctx.rels,
+                    &self.ctx.base_part,
+                    self.ctx.assets,
+                    rel_id,
+                )?,
+                None => None,
+            };
+            self.push(Inline::Image {
+                alt,
+                source: source.or(preview_source).unwrap_or(ImageSource::Unavailable),
+            });
             return Ok(());
         }
 
@@ -883,6 +918,206 @@ fn collect_row_cells<'e>(parent: &'e Element, cells: &mut Vec<TcInfo<'e>>) {
     }
 }
 
+/// Decode a `<w:sym w:font="..." w:char="..."/>` glyph from legacy Symbol,
+/// Wingdings, or Webdings code pages (either `0xF020..=0xF0FF` PUA or
+/// `0x0020..=0x00FF`). Credit: @rahul05ranjan (`firecrawl/anydoc` Issue #193 /
+/// PR #211).
+fn decode_w_sym(elem: &Element) -> Option<char> {
+    let raw = elem.attr(ns::W, "char")?.trim();
+    let code = u32::from_str_radix(raw.trim_start_matches("0x").trim_start_matches("0X"), 16).ok()?;
+    let byte = match code {
+        0xF020..=0xF0FF => (code - 0xF000) as u8,
+        0x0020..=0x00FF => code as u8,
+        _ => return char::from_u32(code).filter(|c| !c.is_control()),
+    };
+    let font = elem.attr(ns::W, "font").unwrap_or("Symbol").trim().to_ascii_lowercase();
+    match font.as_str() {
+        "symbol" => decode_symbol_byte(byte),
+        "wingdings" => decode_wingdings_byte(byte),
+        "wingdings 2" | "wingdings 3" | "webdings" => decode_dingbats_byte(&font, byte),
+        _ => char::from_u32(byte as u32),
+    }
+}
+
+fn decode_symbol_byte(b: u8) -> Option<char> {
+    Some(match b {
+        0x22 => '\u{2200}',
+        0x24 => '\u{2203}',
+        0x27 => '\u{220B}',
+        0x2A => '\u{2217}',
+        0x2D => '\u{2212}',
+        0x20..=0x3F | 0x5B | 0x5D | 0x5F | 0x7B..=0x7E => b as char,
+        0x40 => '\u{2245}',
+        0x41 => '\u{0391}',
+        0x42 => '\u{0392}',
+        0x43 => '\u{03A7}',
+        0x44 => '\u{0394}',
+        0x45 => '\u{0395}',
+        0x46 => '\u{03A6}',
+        0x47 => '\u{0393}',
+        0x48 => '\u{0397}',
+        0x49 => '\u{0399}',
+        0x4A => '\u{03D1}',
+        0x4B => '\u{039A}',
+        0x4C => '\u{039B}',
+        0x4D => '\u{039C}',
+        0x4E => '\u{039D}',
+        0x4F => '\u{039F}',
+        0x50 => '\u{03A0}',
+        0x51 => '\u{0398}',
+        0x52 => '\u{03A1}',
+        0x53 => '\u{03A3}',
+        0x54 => '\u{03A4}',
+        0x55 => '\u{03A5}',
+        0x56 => '\u{03C2}',
+        0x57 => '\u{03A9}',
+        0x58 => '\u{039E}',
+        0x59 => '\u{03A8}',
+        0x5A => '\u{0396}',
+        0x5C => '\u{2234}',
+        0x5E => '\u{22A5}',
+        0x60 => '\u{F8E5}',
+        0x61 => '\u{03B1}',
+        0x62 => '\u{03B2}',
+        0x63 => '\u{03C7}',
+        0x64 => '\u{03B4}',
+        0x65 => '\u{03B5}',
+        0x66 => '\u{03C6}',
+        0x67 => '\u{03B3}',
+        0x68 => '\u{03B7}',
+        0x69 => '\u{03B9}',
+        0x6A => '\u{03D5}',
+        0x6B => '\u{03BA}',
+        0x6C => '\u{03BB}',
+        0x6D => '\u{03BC}',
+        0x6E => '\u{03BD}',
+        0x6F => '\u{03BF}',
+        0x70 => '\u{03C0}',
+        0x71 => '\u{03B8}',
+        0x72 => '\u{03C1}',
+        0x73 => '\u{03C3}',
+        0x74 => '\u{03C4}',
+        0x75 => '\u{03C5}',
+        0x76 => '\u{03D6}',
+        0x77 => '\u{03C9}',
+        0x78 => '\u{03BE}',
+        0x79 => '\u{03C8}',
+        0x7A => '\u{03B6}',
+        0xA0 => '\u{20AC}',
+        0xA1 => '\u{03D2}',
+        0xA2 => '\u{2032}',
+        0xA3 => '\u{2264}',
+        0xA4 => '\u{2044}',
+        0xA5 => '\u{221E}',
+        0xA6 => '\u{0192}',
+        0xA7 => '\u{2663}',
+        0xA8 => '\u{2666}',
+        0xA9 => '\u{2665}',
+        0xAA => '\u{2660}',
+        0xAB => '\u{2194}',
+        0xAC => '\u{2190}',
+        0xAD => '\u{2191}',
+        0xAE => '\u{2192}',
+        0xAF => '\u{2193}',
+        0xB0 => '\u{00B0}',
+        0xB1 => '\u{00B1}',
+        0xB2 => '\u{2033}',
+        0xB3 => '\u{2265}',
+        0xB4 => '\u{00D7}',
+        0xB5 => '\u{221D}',
+        0xB6 => '\u{2202}',
+        0xB7 => '\u{2022}',
+        0xB8 => '\u{00F7}',
+        0xB9 => '\u{2260}',
+        0xBA => '\u{2261}',
+        0xBB => '\u{2248}',
+        0xBC => '\u{2026}',
+        0xC4 => '\u{2297}',
+        0xC5 => '\u{2295}',
+        0xC6 => '\u{2205}',
+        0xC7 => '\u{2229}',
+        0xC8 => '\u{222A}',
+        0xCC => '\u{2282}',
+        0xCD => '\u{2286}',
+        0xCE => '\u{2208}',
+        0xCF => '\u{2209}',
+        0xD0 => '\u{2220}',
+        0xD1 => '\u{2207}',
+        0xD2 | 0xE2 => '\u{00AE}',
+        0xD3 | 0xE3 => '\u{00A9}',
+        0xD4 | 0xE4 => '\u{2122}',
+        0xD5 => '\u{220F}',
+        0xD6 => '\u{221A}',
+        0xD7 => '\u{22C5}',
+        0xD8 => '\u{00AC}',
+        0xD9 => '\u{2227}',
+        0xDA => '\u{2228}',
+        0xDB => '\u{21D4}',
+        0xDC => '\u{21D0}',
+        0xDD => '\u{21D1}',
+        0xDE => '\u{21D2}',
+        0xDF => '\u{21D3}',
+        0xE0 => '\u{25CA}',
+        0xE5 => '\u{2211}',
+        0xF2 => '\u{222B}',
+        _ => return None,
+    })
+}
+
+fn decode_wingdings_byte(b: u8) -> Option<char> {
+    Some(match b {
+        0x20 => ' ',
+        0x28 => '\u{260E}',
+        0x2A => '\u{2709}',
+        0x4A => '\u{263A}',
+        0x4B => '\u{1F610}',
+        0x4C => '\u{2639}',
+        0x6C => '\u{25CF}',
+        0x6E => '\u{25A0}',
+        0x6F | 0x70 => '\u{25A1}',
+        0x75 => '\u{25C6}',
+        0x76 => '\u{2756}',
+        0x9F | 0xA7 => '\u{2022}',
+        0xA8 => '\u{25CB}',
+        0xD8 => '\u{27A2}',
+        0xDC => '\u{279C}',
+        0xDF => '\u{2190}',
+        0xE0 => '\u{2192}',
+        0xE1 => '\u{2191}',
+        0xE2 => '\u{2193}',
+        0xE7 => '\u{2B05}',
+        0xE8 => '\u{27A1}',
+        0xE9 => '\u{2B06}',
+        0xEA => '\u{2B07}',
+        0xFB => '\u{2717}',
+        0xFC => '\u{2713}',
+        0xFD => '\u{2612}',
+        0xFE => '\u{2611}',
+        _ => return None,
+    })
+}
+
+fn decode_dingbats_byte(font: &str, b: u8) -> Option<char> {
+    match (font, b) {
+        (_, 0x20) => Some(' '),
+        ("wingdings 2", 0x50) => Some('\u{2713}'),
+        ("wingdings 2", 0x52) => Some('\u{2611}'),
+        ("wingdings 2", 0x53) => Some('\u{2612}'),
+        ("wingdings 2", 0x97 | 0x98) => Some('\u{2022}'),
+        ("wingdings 3", 0x61 | 0x66 | 0x75) => Some('\u{2190}'),
+        ("wingdings 3", 0x62 | 0x67 | 0x76) => Some('\u{2192}'),
+        ("wingdings 3", 0x63 | 0x68 | 0x77) => Some('\u{2191}'),
+        ("wingdings 3", 0x64 | 0x69 | 0x78) => Some('\u{2193}'),
+        ("webdings", 0x61) => Some('\u{2713}'),
+        ("webdings", 0x72) => Some('\u{2717}'),
+        ("webdings", 0x33) => Some('\u{25C0}'),
+        ("webdings", 0x34) => Some('\u{25B6}'),
+        ("webdings", 0x35) => Some('\u{25B2}'),
+        ("webdings", 0x36) => Some('\u{25BC}'),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -993,5 +1228,18 @@ mod tests {
         };
         assert_eq!(before, "before");
         assert_eq!(after, "after");
+    }
+
+    #[test]
+    fn w_sym_decodes_symbol_and_wingdings_glyphs() {
+        let xml = br#"<w:r xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main">
+            <w:sym w:font="Symbol" w:char="F0B7"/>
+            <w:sym w:font="Symbol" w:char="F06D"/>
+            <w:sym w:font="Wingdings" w:char="F0FC"/>
+        </w:r>"#;
+        let tree = crate::package::xml::parse_xml(xml).unwrap();
+        let run = tree.find(ns::W, "r").unwrap();
+        let glyphs: String = run.child_elems().filter_map(decode_w_sym).collect();
+        assert_eq!(glyphs, "\u{2022}\u{03BC}\u{2713}");
     }
 }

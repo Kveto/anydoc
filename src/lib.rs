@@ -18,6 +18,36 @@ pub use error::ConvertError;
 
 use render::markdown::document_to_markdown;
 
+/// Markdown and the source objects marked for follow-up processing.
+#[derive(Debug)]
+pub struct MarkdownWithObjects {
+    /// Markdown in reading order, with a marker for each pending object.
+    pub markdown: String,
+    /// Pending objects in marker order.
+    pub objects: Vec<PendingObject>,
+    /// Embedded asset payloads, indexed by the image sources in `objects`.
+    pub assets: Vec<model::Asset>,
+}
+
+/// An object referenced by its one-based marker number in the Markdown.
+#[derive(Debug)]
+pub enum PendingObject {
+    /// A PDF page that needs OCR.
+    PdfPage {
+        /// One-based physical page number.
+        page: u32,
+        /// Classification reason from the PDF extractor, when available.
+        reason: Option<String>,
+    },
+    /// An image placement that can be inspected separately.
+    Image {
+        /// Original alternative text.
+        alt: String,
+        /// Embedded asset, external URL, or unavailable payload.
+        source: model::ImageSource,
+    },
+}
+
 use std::path::Path;
 
 /// Input format. Selects the parser; container variants that share a parser
@@ -136,6 +166,39 @@ pub fn to_document(
     format: impl Into<Option<Format>>,
 ) -> Result<model::Document, ConvertError> {
     formats::parse(bytes, resolve_format(bytes, format.into())?)
+}
+
+/// Convert a document file to Markdown, marking PDF pages that need OCR and
+/// images or embedded objects recognized by the parser so callers can process
+/// them in a follow-up step instead of stopping on [`ConvertError::NeedsOcr`].
+pub fn to_markdown_with_objects_file(
+    path: impl AsRef<Path>,
+) -> Result<MarkdownWithObjects, ConvertError> {
+    let path = path.as_ref();
+    let bytes = std::fs::read(path)?;
+    let Some(format) = Format::from_bytes(&bytes).or_else(|| Format::from_path(path)) else {
+        return Err(ConvertError::Unsupported(format!(
+            "unrecognized file content and extension: {}",
+            path.display()
+        )));
+    };
+    to_markdown_with_objects(&bytes, format)
+}
+
+/// Convert bytes to Markdown, marking PDF pages that need OCR and images
+/// recognized by the document parser. The caller can process these objects
+/// separately. Invalid or unreadable documents still return a conversion error.
+pub fn to_markdown_with_objects(
+    bytes: &[u8],
+    format: impl Into<Option<Format>>,
+) -> Result<MarkdownWithObjects, ConvertError> {
+    let format = resolve_format(bytes, format.into())?;
+    if format == Format::Pdf {
+        return formats::pdf::to_markdown_with_objects(bytes);
+    }
+    let document = formats::parse(bytes, format)?;
+    let (markdown, objects) = render::markdown::document_to_markdown_with_objects(&document);
+    Ok(MarkdownWithObjects { markdown, objects, assets: document.assets })
 }
 
 fn resolve_format(bytes: &[u8], format: Option<Format>) -> Result<Format, ConvertError> {
