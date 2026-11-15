@@ -1,16 +1,56 @@
-# anydoc
+# Anydoc with local image processing
 
-[![Crates.io](https://img.shields.io/crates/v/anydoc.svg)](https://crates.io/crates/anydoc)
-[![npm](https://img.shields.io/npm/v/@firecrawl/anydoc.svg)](https://www.npmjs.com/package/@firecrawl/anydoc)
-[![PyPI](https://img.shields.io/pypi/v/firecrawl-anydoc.svg)](https://pypi.org/project/firecrawl-anydoc/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![skills.sh](https://skills.sh/b/firecrawl/anydoc)](https://skills.sh/firecrawl/anydoc)
+This fork builds on Firecrawl's Anydoc, a fast Rust converter for Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, and PDFs. Upstream contributors built the format parsers, shared document model, Markdown writer, and Node.js, Python, and WebAssembly bindings. PDF extraction builds on Firecrawl's pdf-inspector. [Original Anydoc](https://github.com/firecrawl/anydoc) · [pdf-inspector](https://github.com/firecrawl/pdf-inspector) · [License](LICENSE)
 
-Fast Rust library that converts documents (Word, PowerPoint, Excel, OpenDocument, RTF, EPUB, CSV, and PDF) into clean GitHub-Flavored Markdown. Includes bindings for [Node.js](node/README.md), [Python](python/README.md), and the [browser](wasm/README.md) (WebAssembly).
+I wanted a simple way to turn documents into Markdown for local search and AI without losing the figures that give the text context. This fork keeps the fast text workflow, adds a way to save and link figures, and lets you choose when local vision is worth the extra time. One scanned page can be marked for OCR while the readable pages still come through.
 
-Built by [Firecrawl](https://firecrawl.dev) to turn any office document into LLM-ready Markdown in single-digit milliseconds, with one consistent output no matter which format goes in. It powers [Firecrawl Parse](https://firecrawl.dev/parse), so if you'd rather not run it yourself, the hosted API gives you the same conversion plus our OCR models for the scanned pages anydoc can't read on its own.
+The fork also includes parser fixes informed by upstream community work. Thanks to [rahul05ranjan](https://github.com/rahul05ranjan) for work on Word comments and symbol glyphs, [Aschenbath](https://github.com/Aschenbath) for work on OpenDocument nested lists and RTF tracked deletions, [crown-sports](https://github.com/crown-sports) for the OpenDocument annotation fix, [Yzzz88](https://github.com/Yzzz88) for chart alignment and OLE previews, and [sean0407](https://github.com/sean0407) for spreadsheet hyperlinks. [Issue and PR credits](docs/local-ai-edition.md#42-upstream-community-findings--prs-credited-in-this-fork)
 
-**[Try it in your browser](https://firecrawl.github.io/anydoc/)**: the demo page runs the library as WebAssembly, so files are converted locally and never leave your machine.
+## Choose how to convert
+
+Run these commands from the root of a checkout of this fork. The Rust example requires a Rust toolchain. The workflow examples also require Python 3. For PDF layout and image dimensions, install the optional Python packages.
+
+```sh
+python -m pip install pymupdf pillow
+```
+
+### 1. Text only
+
+Use this for searchable document text, headings, lists, and supported tables, with no asset export or model processing.
+
+```sh
+cargo run --locked --release --example convert -- report.docx -o report.md
+```
+
+A PDF page that needs OCR gets a marker by default. Use `--strict` if you want conversion to return an error instead.
+
+### 2. Text and linked images
+
+Save recognized images and link them at their reading positions. This is the default for the Python workflow and runs without a model.
+
+```sh
+python examples/local_ai_workflow.py report.docx -o report-out
+python examples/local_ai_workflow.py paper.pdf --pdf-layout -o paper-out
+```
+
+For PDFs with embedded raster figures, `--pdf-layout` uses geometric text and image positions to recover common two-column layouts, detect headings and regular tables, and group figure panels. It uses PyMuPDF. Open `assembled.md` and keep its `assets/` folder alongside it. `marked.md` and `objects.json` preserve the positions, saved asset references, and available source and crop dimensions for downstream processing.
+
+### 3. Text, images, and local descriptions
+
+Use this when you want a chart or diagram to be searchable by what it shows. Start Ollama locally and use an installed vision model. Image descriptions appear next to the original figure and its link.
+
+```sh
+ollama pull qwen3.5:9b
+python examples/local_ai_workflow.py paper.pdf --pdf-layout --describe-image-context -o paper-described
+```
+
+For an Office document, leave out `--pdf-layout`. Use `--model` to select another installed vision model. For scanned-page OCR, select a provider explicitly, for example `--provider tesseract` with Tesseract and Poppler installed. Local descriptions can misread figures or estimate values incorrectly. The linked figure is available for verification.
+
+The layout path uses heuristics. It handles embedded raster figures and many ruled tables. Vector-only figures, ambiguous tables, and layouts with hard-to-resolve reading order can require a separate pass. [Local workflow details](docs/local-ai-edition.md) · [Pipeline design and planned work](docs/object-processing-pipeline.md)
+
+## Upstream packages and APIs
+
+The package names and browser demo below are published by Firecrawl. Use this checkout for the fork-specific workflow above.
 
 ## Quick start
 

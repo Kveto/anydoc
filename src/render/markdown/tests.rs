@@ -781,3 +781,76 @@ fn cell_edge_whitespace_is_trimmed() {
     )]);
     assert_eq!(md, "|  |  |\n| --- | --- |\n| padded | plain |\n");
 }
+
+#[test]
+fn marked_objects_handle_links_backticks_empty_alt_and_ole_kind() {
+    use super::document_to_markdown_with_objects;
+    use crate::model::{Asset, AssetId};
+
+    let doc = Document {
+        blocks: vec![
+            Block::Heading {
+                level: 1,
+                anchor: Some("sec".into()),
+                content: vec![Inline::plain("Report")],
+            },
+            // 1. Backtick in preceding text across a line break + backtick in image alt.
+            Block::Paragraph(vec![
+                Inline::plain("Run `cargo test"),
+                Inline::LineBreak,
+                Inline::Image {
+                    alt: "Revenue `Q3 chart".into(),
+                    source: ImageSource::Asset(AssetId(0)),
+                },
+            ]),
+            // 2. Unresolved internal link wrapping an image must not duplicate the object.
+            Block::Paragraph(vec![Inline::Link {
+                content: vec![Inline::Image {
+                    alt: "Broken link diagram".into(),
+                    source: ImageSource::Asset(AssetId(0)),
+                }],
+                target: LinkTarget::Anchor("missing".into()),
+            }]),
+            // 3. Resolved internal link wrapping an empty-alt image has no leading space in brackets.
+            Block::Paragraph(vec![Inline::Link {
+                content: vec![Inline::Image {
+                    alt: String::new(),
+                    source: ImageSource::Asset(AssetId(0)),
+                }],
+                target: LinkTarget::Anchor("sec".into()),
+            }]),
+            // 4. Non-image asset payload is labeled `(object)` rather than `(image)`.
+            Block::Paragraph(vec![Inline::Image {
+                alt: "Embedded workbook".into(),
+                source: ImageSource::Asset(AssetId(1)),
+            }]),
+        ],
+        notes: Vec::new(),
+        assets: vec![
+            Asset {
+                id: AssetId(0),
+                origin_part: "media/img.png".into(),
+                media_type: "image/png".into(),
+                bytes: vec![1, 2, 3],
+            },
+            Asset {
+                id: AssetId(1),
+                origin_part: "embeddings/ole.bin".into(),
+                media_type: "application/vnd.ms-ole-object".into(),
+                bytes: vec![4, 5, 6],
+            },
+        ],
+    };
+
+    let (md, objects) = document_to_markdown_with_objects(&doc);
+    assert_eq!(objects.len(), 4);
+    assert_eq!(
+        md,
+        "# Report\n\n\
+         Run \\`cargo test\\\n\
+         Revenue \\`Q3 chart `anydoc-object-1` (image)\n\n\
+         Broken link diagram `anydoc-object-2` (image)\n\n\
+         [`anydoc-object-3` (image)](#report)\n\n\
+         Embedded workbook `anydoc-object-4` (object)\n"
+    );
+}

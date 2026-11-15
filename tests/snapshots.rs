@@ -127,6 +127,105 @@ fn scanned_pages_are_reported_not_dropped() {
     }
 }
 
+#[test]
+fn marked_pdf_keeps_readable_text_and_scanned_pages() {
+    use anydoc::{Format, PendingObject, to_markdown_with_objects};
+
+    let mixed = std::fs::read(fixture_root().join("pdf/handmade-mixed.pdf")).unwrap();
+    let result = to_markdown_with_objects(&mixed, Format::Pdf).unwrap();
+    assert!(matches!(result.objects.as_slice(), [PendingObject::PdfPage { page: 2, .. }]));
+    let (text, marker) = result.markdown.split_once("> Pending OCR").unwrap();
+    assert!(!text.trim().is_empty());
+    assert!(marker.contains("PDF page 2 · `anydoc-object-1`"));
+
+    let scan = std::fs::read(fixture_root().join("pdf/handmade-scanned.pdf")).unwrap();
+    let result = to_markdown_with_objects(&scan, Format::Pdf).unwrap();
+    assert!(matches!(result.objects.first(), Some(PendingObject::PdfPage { page: 1, .. })));
+    assert!(result.markdown.contains("PDF page 1 · `anydoc-object-1`"));
+}
+
+#[test]
+fn marked_presentation_exposes_embedded_object_payload() {
+    use anydoc::model::ImageSource;
+    use anydoc::{Format, PendingObject, to_markdown_with_objects};
+
+    let bytes = std::fs::read(fixture_root().join("pptx/handmade-order.pptx")).unwrap();
+    let result = to_markdown_with_objects(&bytes, Format::Pptx).unwrap();
+    let (index, _) = result
+        .objects
+        .iter()
+        .enumerate()
+        .find(|(_, object)| {
+            matches!(object, PendingObject::Image { source: ImageSource::Asset(id), .. }
+            if result.assets[id.0].media_type == "application/vnd.ms-ole-object")
+        })
+        .expect("embedded object marker");
+    assert!(result.markdown.contains(&format!("`anydoc-object-{}` (object)", index + 1)));
+}
+
+#[test]
+fn image_heavy_text_pdf_keeps_extractable_text() {
+    use anydoc::{Format, to_markdown_bytes, to_markdown_with_objects};
+    use std::io::Write as _;
+
+    // A PDF page with both selectable text and a large raster XObject can be
+    // classified as `ImageBased` by `process_pdf_mem` (leaving `result.markdown`
+    // as `None`), while `extract_pages_markdown_mem` extracts the text and
+    // clears `pages_needing_ocr`. Both entry points must return that text.
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    let mut push_obj = |out: &mut Vec<u8>, body: &[u8]| {
+        let id = offsets.len() + 1;
+        offsets.push(out.len());
+        writeln!(out, "{id} 0 obj").unwrap();
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    };
+    let pixels = vec![128u8; 200 * 200];
+    let mut img_obj = format!(
+        "<< /Type /XObject /Subtype /Image /Width 200 /Height 200 /ColorSpace /DeviceGray /BitsPerComponent 8 /Length {} >>\nstream\n",
+        pixels.len()
+    )
+    .into_bytes();
+    img_obj.extend_from_slice(&pixels);
+    img_obj.extend_from_slice(b"\nendstream");
+
+    let stream = b"BT /F1 12 Tf 72 700 Td (Page one has selectable text and a figure.) Tj ET\nq 300 0 0 300 72 200 cm /Im0 Do Q\n";
+    let content_obj =
+        format!("<< /Length {} >>\nstream\n{}endstream", stream.len(), String::from_utf8_lossy(stream))
+            .into_bytes();
+
+    push_obj(&mut out, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push_obj(&mut out, b"<< /Type /Pages /Kids [5 0 R] /Count 1 >>");
+    push_obj(&mut out, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>");
+    push_obj(&mut out, &img_obj);
+    push_obj(
+        &mut out,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> /XObject << /Im0 4 0 R >> >> /Contents 6 0 R >>",
+    );
+    push_obj(&mut out, &content_obj);
+
+    let xref_offset = out.len();
+    writeln!(out, "xref\n0 {}", offsets.len() + 1).unwrap();
+    writeln!(out, "0000000000 65535 f ").unwrap();
+    for off in &offsets {
+        writeln!(out, "{off:010} 00000 n ").unwrap();
+    }
+    write!(
+        out,
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+        offsets.len() + 1
+    )
+    .unwrap();
+
+    let md = to_markdown_bytes(&out, Format::Pdf).unwrap();
+    assert!(md.contains("Page one has selectable text and a figure."), "{md}");
+    let marked = to_markdown_with_objects(&out, Format::Pdf).unwrap();
+    assert_eq!(marked.markdown, md);
+    assert!(marked.objects.is_empty());
+}
+
 /// Embedded object payloads land in `Document::assets` with their identity
 /// and media type (the Markdown output shows only the alt text).
 #[test]
@@ -143,7 +242,8 @@ fn embedded_ole_payload_is_retained() {
 }
 
 /// Standard Word OLE markup places a VML preview image next to the
-/// `o:OLEObject`; the object payload (not the preview) must be retained.
+/// `o:OLEObject`; the object payload (not the preview) must be retained,
+/// and the companion preview image is also kept in the asset store.
 #[test]
 fn docx_ole_payload_wins_over_its_preview_image() {
     let path = fixture_root().join("docx").join("handmade-ole.docx");
@@ -155,6 +255,62 @@ fn docx_ole_payload_wins_over_its_preview_image() {
         .find(|a| a.media_type == "application/vnd.ms-ole-object")
         .expect("OLE payload retained as an asset");
     assert_eq!(ole.bytes, b"DOCX-OLE-PAYLOAD".repeat(4));
+    assert!(
+        doc.assets.iter().any(|a| a.media_type.starts_with("image/")),
+        "companion VML preview image is also retained in assets: {:?}",
+        doc.assets
+    );
+}
+
+/// Even when a valid multi-page PDF contains zero extractable text and no
+/// pre-flagged OCR pages (e.g. blank or unflagged raster pages),
+/// `to_markdown_with_objects` emits page markers instead of failing.
+#[test]
+fn blank_or_image_only_pdf_emits_page_markers_in_never_stop_mode() {
+    use anydoc::{Format, PendingObject, to_markdown_with_objects};
+    use std::io::Write as _;
+
+    let mut out = Vec::new();
+    out.extend_from_slice(b"%PDF-1.4\n");
+    let mut offsets = Vec::new();
+    let mut push_obj = |out: &mut Vec<u8>, body: &[u8]| {
+        let id = offsets.len() + 1;
+        offsets.push(out.len());
+        writeln!(out, "{id} 0 obj").unwrap();
+        out.extend_from_slice(body);
+        out.extend_from_slice(b"\nendobj\n");
+    };
+    push_obj(&mut out, b"<< /Type /Catalog /Pages 2 0 R >>");
+    push_obj(&mut out, b"<< /Type /Pages /Kids [3 0 R 4 0 R] /Count 2 >>");
+    push_obj(
+        &mut out,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>",
+    );
+    push_obj(
+        &mut out,
+        b"<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 5 0 R >>",
+    );
+    push_obj(&mut out, b"<< /Length 0 >>\nstream\n\nendstream");
+
+    let xref_offset = out.len();
+    writeln!(out, "xref\n0 {}", offsets.len() + 1).unwrap();
+    writeln!(out, "0000000000 65535 f ").unwrap();
+    for off in &offsets {
+        writeln!(out, "{off:010} 00000 n ").unwrap();
+    }
+    write!(
+        out,
+        "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref_offset}\n%%EOF\n",
+        offsets.len() + 1
+    )
+    .unwrap();
+
+    let marked = to_markdown_with_objects(&out, Format::Pdf).unwrap();
+    assert_eq!(marked.objects.len(), 2);
+    assert!(matches!(marked.objects[0], PendingObject::PdfPage { page: 1, .. }));
+    assert!(matches!(marked.objects[1], PendingObject::PdfPage { page: 2, .. }));
+    assert!(marked.markdown.contains("PDF page 1 · `anydoc-object-1`"));
+    assert!(marked.markdown.contains("PDF page 2 · `anydoc-object-2`"));
 }
 
 /// Repeated references to one part must neither re-decompress against the

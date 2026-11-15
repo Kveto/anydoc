@@ -781,6 +781,12 @@ impl<'a> Parser<'a> {
             "b" => self.set_style(|s| s.bold = on),
             "i" => self.set_style(|s| s.italic = on),
             "strike" | "striked" => self.set_style(|s| s.strike = on),
+            // Suppress tracked-change deletions (`\deleted`; credit:
+            // @Aschenbath, `firecrawl/anydoc` Issue #202 / PR #216).
+            "deleted" => {
+                self.flush_pending();
+                self.state.suppress = on;
+            }
             "plain" => {
                 self.flush_pending();
                 let font = self.state.font;
@@ -1413,5 +1419,12 @@ mod tests {
         .unwrap();
         assert_eq!(doc.assets.len(), 1, "only the preferred picture: {:?}", doc.assets);
         assert_eq!(doc.assets[0].media_type, "image/png");
+    }
+
+    #[test]
+    fn deleted_tracked_revision_text_is_suppressed() {
+        let src = br"{\rtf1 Keep {\deleted removed text}this.}";
+        let md = crate::to_markdown_bytes(src, crate::Format::Rtf).unwrap();
+        assert_eq!(md, "Keep this.\n");
     }
 }

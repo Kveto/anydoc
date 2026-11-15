@@ -83,12 +83,18 @@ pub(super) fn parse(pkg: &mut Package, wb_part: &str) -> Result<Document, Conver
             continue;
         };
         let mut content = read_sheet(worksheet, &shared, &styles, date1904);
+        let sheet_rels = read_rels(pkg, &rels_part_for(part))?;
+        read_sheet_hyperlinks(worksheet, &sheet_rels, &mut content);
         content.checkboxes = read_vml_checkboxes(pkg, part)?;
         let Some(table) = build_table(content, &mut slots)? else {
             continue;
         };
         if multi_sheet {
-            doc.blocks.push(Block::heading(2, vec![Inline::plain(name.clone())]));
+            doc.blocks.push(Block::Heading {
+                level: 2,
+                anchor: Some(name.clone()),
+                content: vec![Inline::plain(name.clone())],
+            });
         }
         doc.blocks.push(Block::Table(table));
     }
@@ -238,6 +244,8 @@ pub(super) struct SheetContent {
     pub(super) cells: HashMap<(u32, u32), String>,
     /// Form control checkboxes by the cell they are anchored in.
     pub(super) checkboxes: Checkboxes,
+    /// Cell hyperlinks by zero-based (row, col).
+    pub(super) hyperlinks: HashMap<(u32, u32), crate::model::LinkTarget>,
     pub(super) hidden_rows: HashSet<u32>,
     /// Inclusive zero-based column ranges hidden by `cols/col` entries.
     pub(super) hidden_cols: Vec<(u32, u32)>,
@@ -315,6 +323,54 @@ fn read_sheet(
         }
     }
     out
+}
+
+/// Extract worksheet `<hyperlinks>` against worksheet relationships (`r:id`)
+/// or internal sheet locations (`firecrawl/anydoc` Issue #192 / PR #198).
+fn read_sheet_hyperlinks(
+    worksheet: &Element,
+    sheet_rels: &Relationships,
+    out: &mut SheetContent,
+) {
+    for hl in worksheet
+        .find_all(ns::SML, "hyperlinks")
+        .flat_map(|h| h.find_all(ns::SML, "hyperlink"))
+    {
+        let Some(rc) = hl.attr_unqualified("ref").and_then(parse_ref) else {
+            continue;
+        };
+        if rc.0 >= MAX_ROWS || rc.1 >= MAX_COLS {
+            continue;
+        }
+        let target = if let Some(rid) = hl.attr_qualified(ns::R, "id")
+            && let Some(rel) = sheet_rels.get(rid)
+        {
+            let raw = match hl.attr_unqualified("location") {
+                Some(loc) if !loc.is_empty() => format!("{}#{loc}", rel.target),
+                _ => rel.target.clone(),
+            };
+            Some(crate::shared::fields::classify_rel_target(
+                rel.mode == crate::package::relationships::TargetMode::External,
+                &raw,
+            ))
+        } else {
+            hl.attr_unqualified("location")
+                .filter(|loc| !loc.is_empty())
+                .map(|loc| {
+                    let sheet_or_name =
+                        loc.split('!').next().unwrap_or(loc).trim_matches('\'');
+                    crate::model::LinkTarget::Anchor(sheet_or_name.to_string())
+                })
+        };
+        if let Some(target) = target {
+            if !out.cells.contains_key(&rc)
+                && let Some(disp) = hl.attr_unqualified("display").filter(|d| !d.is_empty())
+            {
+                out.cells.insert(rc, clean_text(disp));
+            }
+            out.hyperlinks.insert(rc, target);
+        }
+    }
 }
 
 /// A cell's rendered text, per its `t` type and resolved number format.
@@ -414,6 +470,11 @@ pub(super) fn build_table(
     }
     for (at, text) in sheet.cells.drain() {
         cells.insert(at, vec![Inline::plain(text)]);
+    }
+    for (at, target) in sheet.hyperlinks.drain() {
+        if let Some(content) = cells.remove(&at) {
+            cells.insert(at, vec![Inline::Link { content, target }]);
+        }
     }
     // A merge with no surviving row or column disappears with its content.
     // One whose origin is hidden keeps its content at the first surviving
@@ -1077,5 +1138,33 @@ mod tests {
         };
         let doc = parse(&wb.build()).unwrap();
         assert_eq!(texts(first_table(&doc)), vec![vec!["14", "L/R [x] Roof", "[ ]"]]);
+    }
+
+    #[test]
+    fn worksheet_cell_hyperlinks_render_as_markdown_links() {
+        const HL_REL: &str =
+            "http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink";
+        let rels = format!(
+            r#"<?xml version="1.0"?><Relationships xmlns="{PKG_RELS}"><Relationship Id="rId1" Type="{HL_REL}" Target="https://example.com/docs" TargetMode="External"/></Relationships>"#
+        );
+        let wb = Wb {
+            sheets: vec![
+                (
+                    "S",
+                    "",
+                    r#"<sheetData><row r="1"><c r="A1" t="str"><v>Docs</v></c><c r="B1" t="str"><v>Notes</v></c></row></sheetData><hyperlinks xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><hyperlink ref="A1" r:id="rId1"/><hyperlink ref="B1" location="Notes"/></hyperlinks>"#,
+                ),
+                (
+                    "Notes",
+                    "",
+                    r#"<sheetData><row r="1"><c r="A1" t="str"><v>Note body</v></c></row></sheetData>"#,
+                ),
+            ],
+            extra: vec![("xl/worksheets/_rels/sheet1.xml.rels", &rels)],
+            ..Wb::default()
+        };
+        let md = crate::to_markdown_bytes(&wb.build(), crate::Format::Excel).unwrap();
+        assert!(md.contains("[Docs](https://example.com/docs)"), "{md}");
+        assert!(md.contains("[Notes](#notes)"), "{md}");
     }
 }

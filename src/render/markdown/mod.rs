@@ -8,10 +8,14 @@ mod table;
 #[cfg(test)]
 mod tests;
 
-use crate::model::{Block, Document, Inline, List, MarkerKind, Note, TableKind, inlines_are_empty};
+use crate::PendingObject;
+use crate::model::{
+    Asset, Block, Document, Inline, List, MarkerKind, Note, TableKind, inlines_are_empty,
+};
 use anchors::{AnchorMap, resolve_anchors};
 use escape::{EscapeOpts, InlineContext, backtick_fence, escape_text};
 use inline::render_inlines;
+use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
 /// Escape a source-derived composite marker label for literal use: control
@@ -32,28 +36,44 @@ pub(crate) fn escape_marker_label(label: &str, ctx: InlineContext) -> String {
 type NoteNumbers = HashMap<String, usize>;
 
 /// Immutable render context threaded through every render function.
-pub(crate) struct Ctx {
+pub(crate) struct Ctx<'a> {
     nums: NoteNumbers,
     anchors: AnchorMap,
+    assets: &'a [Asset],
+    objects: Option<RefCell<Vec<PendingObject>>>,
 }
 
 pub fn document_to_markdown(doc: &Document) -> String {
-    let rc = Ctx { nums: number_notes(doc), anchors: resolve_anchors(doc) };
+    render_document(doc, false).0
+}
+
+pub(crate) fn document_to_markdown_with_objects(doc: &Document) -> (String, Vec<PendingObject>) {
+    render_document(doc, true)
+}
+
+fn render_document(doc: &Document, mark_objects: bool) -> (String, Vec<PendingObject>) {
+    let rc = Ctx {
+        nums: number_notes(doc),
+        anchors: resolve_anchors(doc),
+        assets: &doc.assets,
+        objects: mark_objects.then(RefCell::default),
+    };
     let mut parts: Vec<String> = doc.blocks.iter().filter_map(|b| render_block(b, &rc)).collect();
     let mut rendered_defs: HashSet<usize> = HashSet::new();
     let mut ordered: Vec<(&Note, usize)> =
         doc.notes.iter().filter_map(|n| rc.nums.get(&n.id).map(|&num| (n, num))).collect();
     ordered.sort_by_key(|(_, num)| *num);
     for (note, num) in ordered {
+        if rendered_defs.contains(&num) {
+            log::debug!("duplicate note id {:?} dropped from output", note.id);
+            continue;
+        }
         let body = render_blocks(&note.blocks, &rc);
         if body.is_empty() {
             continue;
         }
         // The first non-empty definition for a duplicate id wins.
-        if !rendered_defs.insert(num) {
-            log::debug!("duplicate note id {:?} dropped from output", note.id);
-            continue;
-        }
+        rendered_defs.insert(num);
         let mut lines = body.lines();
         let first = lines.next().unwrap_or("");
         let mut s = format!("[^{num}]: {first}");
@@ -70,7 +90,7 @@ pub fn document_to_markdown(doc: &Document) -> String {
     if !out.is_empty() {
         out.push('\n');
     }
-    out
+    (out, rc.objects.map(RefCell::into_inner).unwrap_or_default())
 }
 
 /// Number notes in first-reference order; unreferenced notes follow at the
