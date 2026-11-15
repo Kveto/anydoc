@@ -725,7 +725,7 @@ fn block_text(block: &Block) -> String {
             })
             .collect::<Vec<_>>()
             .join(" "),
-        Block::Rule => String::new(),
+        Block::Rule | Block::SlideStart(_) => String::new(),
     }
 }
 

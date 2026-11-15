@@ -177,6 +177,6 @@ fn cell_block_text(block: &Block, rc: &Ctx, parts: &mut Vec<String>) {
                 parts.push(s);
             }
         }
-        Block::Rule => {}
+        Block::Rule | Block::SlideStart(_) => {}
     }
 }

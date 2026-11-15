@@ -173,7 +173,7 @@ fn block_bytes(blocks: &[Block]) -> u64 {
                 .sum(),
             Block::BlockQuote(blocks) => block_bytes(blocks),
             Block::CodeBlock { text, .. } => text.len() as u64,
-            Block::Rule => 0,
+            Block::Rule | Block::SlideStart(_) => 0,
         })
         .sum()
 }
