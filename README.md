@@ -48,6 +48,12 @@ For an Office document, leave out `--pdf-layout`. Use `--model` to select anothe
 
 The layout path uses heuristics. It handles embedded raster figures and many ruled tables. Vector-only figures, ambiguous tables, and layouts with hard-to-resolve reading order can require a separate pass. [Local workflow details](docs/local-ai-edition.md) · [Pipeline design and planned work](docs/object-processing-pipeline.md)
 
+## Roadmap for RAG
+
+Future work would extend extraction to the full page structure, including running headers and footers, page numbers, section headings, tables, figures, and captions. Recording their roles, positions, and reading order would help retrieval systems keep section context and cite the right page while filtering repeated page furniture from search results.
+
+Deeper parsing of graphs, charts, and diagrams would recover labels, legends, relationships, and data values where available. Values estimated from graphics would be marked as approximate. Keeping these structured results alongside searchable descriptions and links to the original visuals would give RAG systems more complete evidence for answers grounded in the document.
+
 ## Upstream packages and APIs
 
 The package names and browser demo below are published by Firecrawl. Use this checkout for the fork-specific workflow above.
